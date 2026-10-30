@@ -17,7 +17,7 @@ Living spec for this demo. Read it before changing anything; update it after.
 | seed | hashicorp/vault, one-shot | `seed/seed.sh`: audit, KV secret, database engine + role, policies, tokens |
 | app-static / app-kv / app-dynamic | ./app (same image) | orders API, `SECRET_SOURCE` = env / kv / dynamic |
 | runner | ./runner | serves `page/`, runs `scenarios.yaml`, streams the audit log, reads the k3s API for `kind: k8s` steps |
-| image-loader *(k8s)* | docker:cli, one-shot | `docker save` of `vsj/orders-api:dev` into k3s's image import dir (demo shortcut: Docker socket) |
+| image-loader *(k8s)* | osscontainertools/kaniko (maintained fork), one-shot | builds `./app` again, daemonless, as a tarball `vsj/orders-api:dev` in k3s's image import dir; no engine socket, so Docker and Podman behave the same |
 | k3s *(k8s)* | rancher/k3s v1.34.1, privileged | applies `k8s/demo.yaml` at boot: namespace `orders`, pods `orders-api` + `reporting`, NodePorts 30081/30082 |
 | seed-k8s *(k8s)* | hashicorp/vault, one-shot, root | `seed/seed-k8s.sh`: Kubernetes auth method, roles `orders-api` and `orders-vso` |
 | vso-setup *(k8s)* | rancher/k3s (for kubectl), one-shot | waits for the operator's CRDs (Helm install by k3s), applies `k8s/vso.yaml`, waits for the Secret |
@@ -73,6 +73,8 @@ App endpoints: `GET /orders` (data + `meta` describing where the credential came
 - Restarting one app container with a different mode per stage: needs the Docker socket in the runner and makes switching slow.
 - Vault inside the cluster (Helm) for stage 4: would split the demo into two Vaults; one Vault outside the cluster serves every stage.
 - A local registry for the stage 4 image: needs a push step from the host; the one-shot image-loader keeps it to one `up`.
+- `docker save` through the engine socket for the stage 4 image: the socket path differs between Docker, rootful and rootless Podman, and SELinux on the Podman machine blocks it (`label=disable` needed). Kaniko builds the tarball without it; needs `--cleanup`, or a restarted container snapshots empty layers.
+- Upstream kaniko (GoogleContainerTools) and Chainguard's fork: archived / maintenance-only without public images.
 - Operator resources in `k8s/demo.yaml`: their CRDs don't exist until Helm has run, so `vso-setup` applies them afterwards.
 - A dedicated `vault` audience for the operator's tokens: breaks TokenReview with the client JWT (see rule 9); needs a reviewer token instead.
 

@@ -109,14 +109,20 @@ services:
 
   # ---- Stage 4, profile k8s -------------------------------------------------
 
-  # One-shot: puts the locally built app image where k3s imports images at boot.
-  # Demo shortcut: needs the Docker socket; there is no registry in this stack.
+  # One-shot: builds the app image again, daemonless, as a tarball where k3s imports images at boot.
+  # No engine socket and no registry, so it runs the same on Docker and Podman.
+  # kaniko: the maintained community fork, upstream was archived in 2025.
   image-loader:
     profiles: [k8s]
-    image: docker:cli
-    entrypoint: ["docker", "save", "-o", "/images/orders-api.tar", "vsj/orders-api:dev"]
+    image: ${KANIKO_IMAGE:-ghcr.io/osscontainertools/kaniko:v1.29.0}
+    command:
+      - --context=dir:///workspace
+      - --destination=vsj/orders-api:dev
+      - --no-push
+      - --tar-path=/images/orders-api.tar
+      - --cleanup   # kaniko builds in its own root fs; a restarted container would otherwise snapshot empty layers
     volumes:
-      - /var/run/docker.sock:/var/run/docker.sock
+      - ./app:/workspace:ro
       - k3s-images:/images
 
   k3s:
