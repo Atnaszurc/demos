@@ -94,7 +94,7 @@ Change shared files in `template/` first, then copy into demos (`cmp` shows drif
 - **Runner image bakes in `app.py`/`events.py`**: rebuild (`up --build -d runner`) after changes. `scenarios.yaml`
   and `page/` are mounted and apply immediately.
 - **k3s:** image `rancher/k3s:v1.34.1-k3s1`; `kubectl` is a symlink (`k3s kubectl` fails in the healthcheck);
-  TLS dir is root-only; app image is imported at boot via the one-shot `image-loader` (Docker socket) — a new
+  TLS dir is root-only; app image is imported at boot from a tarball the one-shot `image-loader` builds with kaniko (no engine socket) — a new
   app image needs a k3s restart (simplest: `down -v` + `up`).
 - **Kubernetes auth from outside the cluster:** Vault reviews logins with the client JWT, so client tokens must
   carry the API server audience (a `vault`-only audience breaks TokenReview). k3s default SA tokens live a year.
