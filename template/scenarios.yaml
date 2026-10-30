@@ -1,0 +1,42 @@
+# Everything the page can ask the runner to do. The page sends only a scenario
+# id plus params; each param value must be in the scenario's allowlist.
+#
+# Step kinds:
+#   vault  - call the Vault HTTP API (token defaults to root; set `token:` to act as someone else)
+#   http   - call a service listed under `services:`
+#   wait   - sleep `seconds` (the page shows a countdown)
+#   k8s    - read-only GET to the Kubernetes API (needs a cluster, e.g. a k3s compose profile)
+#
+# Step fields: title, method (GET), path, body, headers, command (shown on the page),
+# save {name: dotted.path.in.response}, show {label: dotted.path} (trim what the page displays),
+# expect (ok | fail | any; default ok).
+# A scenario's `cleanup:` steps always run: after the steps, after an error, or when the page goes away mid-run.
+# Placeholders: {{param}} or {{saved.field}}.
+
+services: {}
+
+# Live activity (runner/events.py): who is who in the event stream and the diagram animations.
+#   actors:      Compose services whose IPs identify a caller
+#   identities:  Vault display name -> actor (root is the presenter: "you")
+#   watches:     Kubernetes fields to poll; a change publishes `event`
+actors: [vault, runner]
+identities:
+  root: you
+watches: []
+
+scenarios:
+  - id: kv-roundtrip
+    title: Write and read a secret
+    params:
+      greeting: [hello, hej]
+    steps:
+      - title: Write a secret
+        kind: vault
+        method: POST
+        path: /v1/secret/data/demo/hello
+        body: { data: { greeting: "{{greeting}}" } }
+        command: vault kv put secret/demo/hello greeting={{greeting}}
+      - title: Read it back
+        kind: vault
+        path: /v1/secret/data/demo/hello
+        command: vault kv get secret/demo/hello

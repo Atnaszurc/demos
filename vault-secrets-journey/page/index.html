@@ -1,0 +1,631 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Vault Secrets Journey</title>
+<meta name="description" content="The same request five ways: a hardcoded password, Vault KV v2, dynamic database credentials, Kubernetes auth and the Vault Secrets Operator, run live against a local stack.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@300;400;500;600&display=swap" rel="stylesheet">
+<link rel="icon" href="data:,">
+<script>
+  // Apply a saved theme before first paint; no saved choice means follow the browser.
+  try { const t = localStorage.getItem('demo-theme'); if (t === 'light' || t === 'dark') document.documentElement.dataset.theme = t; } catch { /* storage blocked */ }
+</script>
+<link rel="stylesheet" href="shell.css">
+<style>
+  /* Demo-specific: stage ladder and comparison table */
+  .ladder { display: grid; gap: var(--s-04); margin: var(--s-07) 0 0; padding: 0; list-style: none; }
+  @media (min-width: 640px) { .ladder { grid-template-columns: repeat(auto-fit, minmax(11rem, 1fr)); } }
+  .ladder a { display: block; height: 100%; border: 1px solid var(--border); padding: var(--s-05); color: var(--text); }
+  .ladder a:hover { text-decoration: none; border-color: var(--primary); background: var(--primary-wash); }
+  .ladder .n { font: 500 12px var(--font-mono); color: var(--text-sub); }
+  .ladder strong { display: block; font-size: 1.1rem; margin: var(--s-02) 0; }
+  .ladder p { margin: 0; color: var(--text-sub); font-size: 0.95rem; }
+
+  .compare { width: 100%; border-collapse: collapse; font-size: 14px; margin-top: var(--s-05); }
+  .compare th, .compare td { text-align: left; padding: var(--s-03) var(--s-04); border-bottom: 1px solid var(--border); vertical-align: top; }
+  .compare th { font-weight: 600; background: var(--bg-layer); }
+  .compare td.mono { font-family: var(--font-mono); font-size: 13px; overflow-wrap: anywhere; }
+  .compare tr.is-loading td { color: var(--text-helper); }
+  .table-wrap { overflow-x: auto; }
+</style>
+</head>
+<body>
+<div class="progress"></div>
+
+<header class="header">
+  <div class="header-inner">
+    <div class="brand">Vault secrets journey</div>
+    <nav class="chapters-nav" aria-label="Chapters">
+      <a href="#intro">Intro</a>
+      <a href="#no-vault">No Vault</a>
+      <a href="#kv">KV v2</a>
+      <a href="#dynamic">Dynamic</a>
+      <a href="#kubernetes">Kubernetes</a>
+      <a href="#vso">Operator</a>
+      <a href="#compare-chapter">Compare</a>
+      <a href="#leak">Leak test</a>
+      <a href="#policy">Policy</a>
+      <a href="#sentinel">Sentinel</a>
+      <a href="#run">Run it</a>
+    </nav>
+    <button class="theme-toggle" data-theme-toggle type="button">◐ System</button>
+    <span class="live-badge" data-live-badge>Checking…</span>
+  </div>
+</header>
+
+<main>
+<!-- ================================================================== -->
+<section id="intro" class="chapter">
+  <div class="page">
+    <span class="chapter-num">Vault secrets journey</span>
+    <h1>Same request, five ways to get a database password</h1>
+    <p class="lede">An orders API reads from Postgres. We run it side by side with the password hardcoded,
+      with the password in <span class="node" data-node="kv">Vault KV v2</span>, and with
+      <span class="node" data-node="database-engine">dynamic credentials</span> that Vault creates per request; with the optional
+      Kubernetes profile also as a pod that logs in with its service account, and as a pod the Vault Secrets Operator looks after.
+      Every button below sends a real request to the local stack. The diagrams animate the calls as they happen, and the
+      activity panel in the corner lists them.</p>
+    <ol class="ladder">
+      <li><a href="#no-vault"><span class="n">Stage 1</span><strong>No Vault</strong><p>The password is in the app's environment, shared and permanent.</p></a></li>
+      <li><a href="#kv"><span class="n">Stage 2</span><strong>KV v2</strong><p>The same password, now stored, access-controlled and audited in Vault.</p></a></li>
+      <li><a href="#dynamic"><span class="n">Stage 3</span><strong>Dynamic</strong><p>No shared password: Vault creates a database user that expires in 30 seconds.</p></a></li>
+      <li><a href="#kubernetes"><span class="n">Stage 4 · optional</span><strong>Kubernetes</strong><p>No Vault token either: the pod proves who it is with its service account.</p></a></li>
+      <li><a href="#vso"><span class="n">Stage 5 · optional</span><strong>Operator</strong><p>No Vault code at all: the operator keeps a Secret fresh for a stage 1 app.</p></a></li>
+    </ol>
+  </div>
+</section>
+
+<!-- ================================================================== -->
+<section id="no-vault" class="chapter">
+  <div class="page">
+    <span class="chapter-num">Stage 1 · <span class="chip chip-risk">no vault</span></span>
+    <h2>The password lives in the app</h2>
+    <p class="lede">The orders API gets <code class="inline">DB_USER</code> and <code class="inline">DB_PASSWORD</code> from its environment.
+      It works, and that's the problem: the same password is in compose files, CI variables, and every copy of the container's config.</p>
+
+    <svg id="d-static" class="diagram" viewBox="0 0 760 190" role="img" aria-label="The orders API connects to Postgres with a password from its environment">
+      <rect class="box" x="30" y="30" width="220" height="80" data-actor="app-static"/>
+      <text class="label" x="140" y="66" text-anchor="middle">orders API</text>
+      <text class="sub" x="140" y="88" text-anchor="middle">app-static</text>
+      <rect class="box risk" x="30" y="128" width="220" height="34"/>
+      <text class="risk-text" x="140" y="150" text-anchor="middle">DB_PASSWORD=Sup3rS3cret!2019</text>
+      <path class="flow" d="M250 70 H500" marker-end="url(#arrow)" data-flow="app-static>postgres"/>
+      <text class="flow-label" x="375" y="60" text-anchor="middle">connect as app</text>
+      <rect class="box data" x="510" y="30" width="220" height="80" data-actor="postgres"/>
+      <text class="label" x="620" y="66" text-anchor="middle">Postgres</text>
+      <text class="sub" x="620" y="88" text-anchor="middle">orders</text>
+    </svg>
+
+    <div class="scenario" data-scenario="request" data-params='{"stage":"static"}' data-diagram="#d-static">
+      <div class="scenario-head"><h3>Send a request</h3><button class="btn" data-run>GET /orders</button></div>
+      <div class="scenario-output" aria-live="polite"></div>
+    </div>
+
+    <div class="subsection">
+      <h3>What anyone with access to the host gets</h3>
+      <p class="helper">This demo-only endpoint returns what the app holds. With a hardcoded password the same thing is visible through
+        <code class="inline">docker inspect</code>, <code class="inline">/proc/&lt;pid&gt;/environ</code>, image layers or CI logs.</p>
+      <div class="scenario" data-scenario="what-leaks" data-params='{"stage":"static"}'>
+        <div class="scenario-head"><h3>Look inside the app</h3><button class="btn secondary" data-run>GET /debug/creds</button></div>
+        <div class="scenario-output" aria-live="polite"></div>
+      </div>
+      <div class="callout risk">One password, shared by every instance, valid until someone changes it, and no record of who used it.</div>
+    </div>
+
+    <p class="helper"><strong>Next.</strong> <a href="#kv">Move the password into Vault</a></p>
+  </div>
+</section>
+
+<!-- ================================================================== -->
+<section id="kv" class="chapter">
+  <div class="page">
+    <span class="chapter-num">Stage 2 · <span class="chip chip-vault">kv v2</span></span>
+    <h2>The password lives in Vault</h2>
+    <p class="lede">The app no longer has the password in its config. It authenticates to Vault with its own
+      <span class="node" data-node="token">token</span> and reads <code class="inline">secret/app/db</code>.
+      Its <span class="node" data-node="policy">policy</span> allows exactly that one path, and the
+      <span class="node" data-node="audit">audit log</span> records every read.</p>
+
+    <svg id="d-kv" class="diagram" viewBox="0 0 760 200" role="img" aria-label="The orders API reads the password from Vault KV, then connects to Postgres">
+      <rect class="box" x="20" y="30" width="200" height="80" data-actor="app-kv"/>
+      <text class="label" x="120" y="66" text-anchor="middle">orders API</text>
+      <text class="sub" x="120" y="88" text-anchor="middle">app-kv</text>
+      <path class="flow vault" d="M220 70 H272" marker-end="url(#arrow)" data-flow="app-kv>vault"/>
+      <text class="flow-label" x="246" y="58" text-anchor="middle">1</text>
+      <rect class="box vault" x="280" y="30" width="200" height="80" data-actor="vault"/>
+      <text class="label" x="380" y="66" text-anchor="middle">Vault</text>
+      <text class="sub" x="380" y="88" text-anchor="middle">secret/app/db (KV v2)</text>
+      <rect class="box data" x="540" y="30" width="200" height="80" data-actor="postgres"/>
+      <text class="label" x="640" y="66" text-anchor="middle">Postgres</text>
+      <text class="sub" x="640" y="88" text-anchor="middle">orders</text>
+      <path class="flow" d="M120 110 V160 H640 V118" marker-end="url(#arrow)" data-flow="app-kv>postgres"/>
+      <text class="flow-label" x="380" y="150" text-anchor="middle">2 · connect as app (same password as stage 1)</text>
+    </svg>
+
+    <div class="scenario" data-scenario="request" data-params='{"stage":"kv"}' data-diagram="#d-kv">
+      <div class="scenario-head"><h3>Send a request</h3><button class="btn" data-run>GET /orders</button></div>
+      <div class="scenario-output" aria-live="polite"></div>
+    </div>
+
+    <div class="subsection">
+      <h3>How old is this password?</h3>
+      <p class="helper">KV v2 keeps versions and timestamps. In this demo the secret is seeded at start-up, but in real life
+        <code class="inline">created_time</code> is often years ago.</p>
+      <div class="scenario" data-scenario="kv-metadata">
+        <div class="scenario-head"><h3>Secret metadata</h3><button class="btn secondary" data-run>vault kv metadata get</button></div>
+        <div class="scenario-output" aria-live="polite"></div>
+      </div>
+      <div class="callout">Better: one place to store it, a policy for who can read it, and an audit trail.
+        Still the same password, shared by every instance and valid until someone rotates it by hand.</div>
+    </div>
+
+    <p class="helper"><strong>Next.</strong> <a href="#dynamic">Stop sharing a password at all</a></p>
+  </div>
+</section>
+
+<!-- ================================================================== -->
+<section id="dynamic" class="chapter">
+  <div class="page">
+    <span class="chapter-num">Stage 3 · <span class="chip chip-vault">dynamic</span></span>
+    <h2>Vault creates the credential, per request</h2>
+    <p class="lede">The app asks the <span class="node" data-node="database-engine">database secrets engine</span> for credentials.
+      Vault creates a new Postgres user with a 30-second <span class="node" data-node="lease">lease</span>, returns it,
+      and drops the user when the lease ends. There is no shared password left to leak.</p>
+
+    <svg id="d-dynamic" class="diagram" viewBox="0 0 760 200" role="img" aria-label="The orders API asks Vault for credentials; Vault creates a user in Postgres; the app connects as that user">
+      <rect class="box" x="20" y="30" width="200" height="80" data-actor="app-dynamic"/>
+      <text class="label" x="120" y="66" text-anchor="middle">orders API</text>
+      <text class="sub" x="120" y="88" text-anchor="middle">app-dynamic</text>
+      <path class="flow vault" d="M220 70 H272" marker-end="url(#arrow)" data-flow="app-dynamic>vault"/>
+      <text class="flow-label" x="246" y="58" text-anchor="middle">1</text>
+      <rect class="box vault" x="280" y="30" width="200" height="80" data-actor="vault"/>
+      <text class="label" x="380" y="66" text-anchor="middle">Vault</text>
+      <text class="sub" x="380" y="88" text-anchor="middle">database/creds/app</text>
+      <path class="flow vault" d="M480 70 H532" marker-end="url(#arrow)" data-flow="vault>postgres" data-flow-label="ROLE v-token-"/>
+      <text class="flow-label" x="506" y="58" text-anchor="middle">2</text>
+      <rect class="box data" x="540" y="30" width="200" height="80" data-actor="postgres"/>
+      <text class="label" x="640" y="66" text-anchor="middle">Postgres</text>
+      <text class="sub" x="640" y="88" text-anchor="middle">CREATE ROLE v-…</text>
+      <path class="flow" d="M120 110 V160 H640 V118" marker-end="url(#arrow)" data-flow="app-dynamic>postgres"/>
+      <text class="flow-label" x="380" y="150" text-anchor="middle">3 · connect as the new user (expires in 30 s)</text>
+    </svg>
+
+    <div class="scenario" data-scenario="request" data-params='{"stage":"dynamic"}' data-diagram="#d-dynamic">
+      <div class="scenario-head"><h3>Send a request (click twice and compare <code class="inline">db_user</code>)</h3><button class="btn" data-run>GET /orders</button></div>
+      <div class="scenario-output" aria-live="polite"></div>
+    </div>
+
+    <div class="subsection">
+      <h3>The lease behind the credential</h3>
+      <p class="helper">Every dynamic credential has a lease. Vault tracks it, can revoke it early, and revokes it automatically at expiry.</p>
+      <div class="scenario" data-scenario="dynamic-lease">
+        <div class="scenario-head"><h3>Create a credential and look up its lease</h3><button class="btn secondary" data-run>Run</button></div>
+        <div class="scenario-output" aria-live="polite"></div>
+      </div>
+      <div class="callout ok">Each request gets its own user. A credential is useless 30 seconds after it was issued, and the audit log ties every user back to the app that asked for it.</div>
+    </div>
+
+    <p class="helper"><strong>Next.</strong> <a href="#kubernetes">Remove the last secret: the Vault token</a></p>
+  </div>
+</section>
+
+<!-- ================================================================== -->
+<section id="kubernetes" class="chapter">
+  <div class="page">
+    <span class="chapter-num">Stage 4 · <span class="chip chip-vault">kubernetes auth</span></span>
+    <h2>No token in the config either</h2>
+    <p class="lede">Stages 2 and 3 still had one secret in the app's config: its Vault token (<code class="inline">VAULT_TOKEN=app-dynamic-token</code>),
+      the "secret zero". Here the same orders API runs as a pod in a k3s cluster with neither a password nor a Vault token.
+      It presents the <span class="node" data-node="sa-token">service account token</span> Kubernetes mounted into the pod;
+      Vault asks Kubernetes whether that token is valid (<span class="node" data-node="tokenreview">TokenReview</span>) and maps
+      <code class="inline">orders/orders-api</code> to the <code class="inline">app-dynamic</code> policy.</p>
+
+    <svg id="d-k8s" class="diagram" viewBox="0 0 760 250" role="img" aria-label="The pod logs in to Vault with its service account token; Vault verifies it with the Kubernetes API, then issues database credentials">
+      <rect class="box" x="20" y="20" width="250" height="210" stroke-dasharray="6 4"/>
+      <text class="sub" x="34" y="42">k3s cluster · namespace orders</text>
+      <rect class="box" x="40" y="60" width="210" height="76" data-actor="app-k8s orders-api"/>
+      <text class="label" x="145" y="92" text-anchor="middle">orders-api pod</text>
+      <text class="sub" x="145" y="114" text-anchor="middle">service account token</text>
+      <rect class="box" x="40" y="160" width="210" height="52" data-actor="k8s-api"/>
+      <text class="label" x="145" y="191" text-anchor="middle">Kubernetes API</text>
+      <path class="flow vault" d="M250 90 H382" marker-end="url(#arrow)" data-flow="orders-api>vault, k3s>vault"/>
+      <text class="flow-label" x="332" y="80" text-anchor="middle">1 · login (JWT)</text>
+      <path class="flow vault" d="M390 130 C 390 186, 330 186, 258 186" marker-end="url(#arrow)" data-flow="vault>k8s-api"/>
+      <text class="flow-label" x="350" y="208" text-anchor="middle">2 · TokenReview</text>
+      <rect class="box vault" x="390" y="50" width="170" height="80" data-actor="vault"/>
+      <text class="label" x="475" y="86" text-anchor="middle">Vault</text>
+      <text class="sub" x="475" y="108" text-anchor="middle">auth/kubernetes</text>
+      <path class="flow vault" d="M560 90 H602" marker-end="url(#arrow)" data-flow="vault>postgres" data-flow-label="CREATE ROLE v-kubernet-"/>
+      <text class="flow-label" x="581" y="80" text-anchor="middle">3</text>
+      <rect class="box data" x="610" y="50" width="130" height="80" data-actor="postgres"/>
+      <text class="label" x="675" y="86" text-anchor="middle">Postgres</text>
+      <text class="sub" x="675" y="108" text-anchor="middle">v-kubernet-app-…</text>
+    </svg>
+
+    <div class="scenario" data-scenario="k8s-request" data-requires="k8s" data-diagram="#d-k8s">
+      <div class="scenario-head"><h3>Send a request to the pod</h3><button class="btn" data-run>GET /orders</button></div>
+      <div class="scenario-output" aria-live="polite"></div>
+    </div>
+
+    <div class="subsection">
+      <h3>Nothing secret in the pod spec</h3>
+      <p class="helper">Read the pod from the Kubernetes API: the environment has a Vault address and a role name, nothing else.
+        The only credential is the token Kubernetes mounts at <code class="inline">/var/run/secrets/kubernetes.io/serviceaccount</code>.</p>
+      <div class="scenario" data-scenario="k8s-pod-spec" data-requires="k8s">
+        <div class="scenario-head">
+          <h3>kubectl get pod</h3>
+          <label class="field">app
+            <select data-param="app"><option>orders-api</option><option>reporting</option></select>
+          </label>
+          <button class="btn secondary" data-run>Read the pod</button>
+        </div>
+        <div class="scenario-output" aria-live="polite"></div>
+      </div>
+    </div>
+
+    <div class="subsection">
+      <h3>The identity it presents, and what Vault accepts</h3>
+      <p class="helper">The token names the namespace, the service account and even the pod it was issued to.
+        The Vault role accepts only <code class="inline">orders/orders-api</code> with the cluster's audience.</p>
+      <div class="scenario" data-scenario="k8s-identity" data-requires="k8s">
+        <div class="scenario-head"><h3>Token claims and the Vault role</h3><button class="btn secondary" data-run>Show</button></div>
+        <div class="scenario-output" aria-live="polite"></div>
+      </div>
+    </div>
+
+    <div class="subsection">
+      <h3>Same image, different service account</h3>
+      <p class="helper">The <code class="inline">reporting</code> pod runs the identical image with identical settings, including the
+        <code class="inline">orders-api</code> role name. Only its service account differs, and that is all Vault looks at.</p>
+      <div class="scenario" data-scenario="k8s-wrong-sa" data-requires="k8s">
+        <div class="scenario-head"><h3>Request from the reporting pod</h3><button class="btn" data-run>GET /orders</button></div>
+        <div class="scenario-output" aria-live="polite"></div>
+      </div>
+      <div class="callout">This pod still contains Vault login code, and it uses the default service account token, which k3s issues
+        for a year. The next stage removes both: the operator logs in for the app with fresh 10-minute tokens.</div>
+    </div>
+
+    <p class="helper"><strong>Next.</strong> <a href="#vso">Take Vault out of the app entirely</a></p>
+  </div>
+</section>
+
+<!-- ================================================================== -->
+<section id="vso" class="chapter">
+  <div class="page">
+    <span class="chapter-num">Stage 5 · <span class="chip chip-vault">vault secrets operator</span></span>
+    <h2>The stage 1 app, with dynamic credentials</h2>
+    <p class="lede">This pod runs the stage 1 configuration: it reads <code class="inline">DB_USER</code> and <code class="inline">DB_PASSWORD</code>
+      from its environment and knows nothing about Vault. It has no Vault token and not even a Kubernetes service account token.
+      The <span class="node" data-node="vso">Vault Secrets Operator</span>, installed into the cluster with Helm, logs in to Vault as
+      <code class="inline">orders/orders-vso</code>, fetches dynamic credentials into a Kubernetes Secret, renews the lease, and restarts
+      the app when it has to replace them.</p>
+
+    <svg id="d-vso" class="diagram" viewBox="0 0 760 250" role="img" aria-label="The operator logs in to Vault, writes credentials into a Secret, and restarts the app; the app reads the Secret as environment variables and connects to Postgres">
+      <rect class="box" x="20" y="20" width="420" height="210" stroke-dasharray="6 4"/>
+      <text class="sub" x="34" y="42">k3s cluster</text>
+      <rect class="box vault" x="40" y="60" width="180" height="70" data-actor="operator"/>
+      <text class="label" x="130" y="90" text-anchor="middle">operator</text>
+      <text class="sub" x="130" y="112" text-anchor="middle">as orders-vso</text>
+      <rect class="box" x="260" y="60" width="160" height="70" data-actor="secret"/>
+      <text class="label" x="340" y="90" text-anchor="middle">Secret</text>
+      <text class="sub" x="340" y="112" text-anchor="middle">orders-db</text>
+      <rect class="box" x="260" y="160" width="160" height="56" data-actor="app-vso"/>
+      <text class="label" x="340" y="186" text-anchor="middle">app pod</text>
+      <text class="sub" x="340" y="205" text-anchor="middle">env from Secret</text>
+      <path class="flow vault" d="M220 95 H252" marker-end="url(#arrow)" data-flow="operator>secret"/>
+      <text class="flow-label" x="236" y="85" text-anchor="middle">2</text>
+      <path class="flow" d="M340 130 V152" marker-end="url(#arrow)"/>
+      <path class="flow vault" d="M130 130 V188 H252" marker-end="url(#arrow)" data-flow="operator>app-vso"/>
+      <text class="flow-label" x="190" y="180" text-anchor="middle">3 · restart</text>
+      <rect class="box vault" x="490" y="40" width="120" height="70" data-actor="vault"/>
+      <text class="label" x="550" y="72" text-anchor="middle">Vault</text>
+      <text class="sub" x="550" y="94" text-anchor="middle">database/</text>
+      <path class="flow vault" d="M220 75 C 330 20, 420 30, 482 66" marker-end="url(#arrow)" data-flow="operator>vault"/>
+      <text class="flow-label" x="350" y="13" text-anchor="middle">1 · login + creds, renew</text>
+      <rect class="box data" x="620" y="150" width="120" height="70" data-actor="postgres"/>
+      <text class="label" x="680" y="182" text-anchor="middle">Postgres</text>
+      <text class="sub" x="680" y="204" text-anchor="middle">v-kubernet-app-…</text>
+      <path class="flow" d="M420 188 H612" marker-end="url(#arrow)" data-flow="k3s>postgres"/>
+      <text class="flow-label" x="516" y="178" text-anchor="middle">4 · connect</text>
+    </svg>
+
+    <div class="scenario" data-scenario="vso-request" data-requires="k8s" data-diagram="#d-vso">
+      <div class="scenario-head"><h3>Send a request (note <code class="inline">source: env</code>)</h3><button class="btn" data-run>GET /orders</button></div>
+      <div class="scenario-output" aria-live="polite"></div>
+    </div>
+
+    <div class="subsection">
+      <h3>What the operator manages</h3>
+      <p class="helper">One <span class="node" data-node="vds">VaultDynamicSecret</span> says what to fetch and what to restart. The operator owns
+        the Secret it writes, and the app pod only references that Secret.</p>
+      <div class="scenario" data-scenario="vso-objects" data-requires="k8s">
+        <div class="scenario-head"><h3>The resource, the Secret, the pod</h3><button class="btn secondary" data-run>Show</button></div>
+        <div class="scenario-output" aria-live="polite"></div>
+      </div>
+    </div>
+
+    <div class="subsection">
+      <h3>Rotation, without the app noticing</h3>
+      <p class="helper">Leases are 30 seconds, renewable up to 60. The operator renews at 67 % and, when the maximum is near, fetches new
+        credentials and restarts the deployment. Expect a new database user and a new pod name after the wait.</p>
+      <div class="scenario" data-scenario="vso-rotation" data-requires="k8s">
+        <div class="scenario-head"><h3>Before and after 45 seconds</h3><button class="btn" data-run>Watch it rotate</button></div>
+        <div class="scenario-output" aria-live="polite"></div>
+      </div>
+      <div class="callout ok">The app code is the same as in stage 1. Everything Vault-specific (login, lease renewal, rotation) lives in the
+        operator, configured by three small Kubernetes resources.</div>
+      <p class="caption">The restart on rotation exists because environment variables are read once at start. An app that reads a mounted
+        Secret file could pick up rotated values without one, after the kubelet's sync delay.</p>
+    </div>
+
+    <p class="helper"><strong>Next.</strong> <a href="#compare-chapter">Every stage side by side</a></p>
+  </div>
+</section>
+
+<!-- ================================================================== -->
+<section id="compare-chapter" class="chapter">
+  <div class="page">
+    <span class="chapter-num">Compare</span>
+    <h2>The same request against every stage</h2>
+    <p class="lede">One click sends <code class="inline">GET /orders</code> to each stage and lists where the credential came from.</p>
+    <div id="compare">
+      <button class="btn" data-compare>Send to every stage</button>
+      <div class="table-wrap">
+        <table class="compare">
+          <thead><tr><th>Stage</th><th>Credential from</th><th>Database user</th><th>Lifetime</th></tr></thead>
+          <tbody>
+            <tr data-stage="static"><td>1 · No Vault</td><td class="mono">–</td><td class="mono">–</td><td>–</td></tr>
+            <tr data-stage="kv"><td>2 · KV v2</td><td class="mono">–</td><td class="mono">–</td><td>–</td></tr>
+            <tr data-stage="dynamic"><td>3 · Dynamic</td><td class="mono">–</td><td class="mono">–</td><td>–</td></tr>
+            <tr data-stage="k8s" data-scenario="k8s-request" data-requires-feature="k8s"><td>4 · Kubernetes</td><td class="mono">–</td><td class="mono">–</td><td>–</td></tr>
+            <tr data-stage="vso" data-scenario="vso-request" data-requires-feature="k8s"><td>5 · Operator</td><td class="mono">–</td><td class="mono">–</td><td>–</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <p class="caption">Click again: stages 1 and 2 return the same user every time, stages 3 and 4 a new one, stage 5 a new one at every rotation. Stages 4 and 5 need the k8s profile.</p>
+    </div>
+  </div>
+</section>
+
+<!-- ================================================================== -->
+<section id="leak" class="chapter">
+  <div class="page">
+    <span class="chapter-num">Leak test · <span class="chip chip-risk">attacker view</span></span>
+    <h2>A stolen credential, 35 seconds later</h2>
+    <p class="lede">Copy the credentials out of the app, log in to the database with them, wait 35 seconds, and try again.
+      Pick a stage and run it.</p>
+    <div class="scenario" data-scenario="leak-test">
+      <div class="scenario-head">
+        <h3>Steal, use, wait, reuse</h3>
+        <label class="field">stage
+          <select data-param="stage">
+            <option value="static">1 · No Vault</option>
+            <option value="kv">2 · KV v2</option>
+            <option value="dynamic" selected>3 · Dynamic</option>
+          </select>
+        </label>
+        <button class="btn" data-run>Run leak test</button>
+      </div>
+      <div class="scenario-output" aria-live="polite"></div>
+    </div>
+    <div class="callout risk">Stages 1 and 2: the second login still works, and keeps working until someone rotates the password and redeploys.
+      Stage 3: the second login fails because Vault has already dropped the user.</div>
+  </div>
+</section>
+
+<!-- ================================================================== -->
+<section id="policy" class="chapter">
+  <div class="page">
+    <span class="chapter-num">Policy · <span class="chip chip-vault">acl</span></span>
+    <h2>Policies decide who can read what</h2>
+    <p class="lede">Each app's token carries one policy. Vault denies everything else by default, and logs the denial.</p>
+    <div class="grid-2">
+      <div class="scenario" data-scenario="policy-read">
+        <div class="scenario-head">
+          <h3>Read a policy</h3>
+          <label class="field">policy
+            <select data-param="policy"><option>app-kv</option><option>app-dynamic</option></select>
+          </label>
+          <button class="btn secondary" data-run>vault policy read</button>
+        </div>
+        <div class="scenario-output" aria-live="polite"></div>
+      </div>
+      <div class="scenario" data-scenario="policy-check">
+        <div class="scenario-head">
+          <h3>Try a path as an app</h3>
+          <label class="field">as
+            <select data-param="token"><option>app-kv-token</option><option>app-dynamic-token</option></select>
+          </label>
+          <label class="field">path
+            <select data-param="path"><option>secret/data/app/db</option><option>database/creds/app</option></select>
+          </label>
+          <button class="btn" data-run>vault read</button>
+        </div>
+        <div class="scenario-output" aria-live="polite"></div>
+      </div>
+    </div>
+    <p class="caption">A 403 here shows up in red in the audit log. The tokens use fixed ids to keep the demo simple; a real setup
+      would use an auth method such as Kubernetes or AppRole.</p>
+  </div>
+</section>
+
+<!-- ================================================================== -->
+<section id="sentinel" class="chapter">
+  <div class="page">
+    <span class="chapter-num">Sentinel · <span class="chip chip-vault">enterprise</span></span>
+    <h2>Policy as code: <em>when</em>, not just <em>what</em></h2>
+    <p class="lede">An ACL policy can only say which paths a token may use. A <span class="node" data-node="sentinel">Sentinel</span>
+      <span class="node" data-node="egp">endpoint governing policy</span> adds conditions on top. Here: database credentials may only
+      be issued inside a time window. Both have to pass: the app still needs its ACL policy, and now also the window.</p>
+
+    <svg id="d-sentinel" class="diagram" viewBox="0 0 760 170" role="img" aria-label="A request for database credentials passes the ACL check, then the Sentinel check, before Vault creates a user">
+      <rect class="box" x="20" y="40" width="160" height="80" data-actor="app-dynamic"/>
+      <text class="label" x="100" y="76" text-anchor="middle">app-dynamic</text>
+      <text class="sub" x="100" y="98" text-anchor="middle">database/creds/app</text>
+      <path class="flow vault" d="M180 80 H222" marker-end="url(#arrow)" data-flow="app-dynamic>vault" data-flow-label="database/creds"/>
+      <rect class="box vault" x="230" y="40" width="150" height="80"/>
+      <text class="label" x="305" y="76" text-anchor="middle">ACL</text>
+      <text class="sub" x="305" y="98" text-anchor="middle">which path?</text>
+      <path class="flow vault" d="M380 80 H422" marker-end="url(#arrow)" data-flow="app-dynamic>vault" data-flow-label="database/creds" data-flow-delay="450"/>
+      <rect class="box risk" x="430" y="40" width="150" height="80"/>
+      <text class="label" x="505" y="76" text-anchor="middle">Sentinel EGP</text>
+      <text class="sub" x="505" y="98" text-anchor="middle">inside the window?</text>
+      <path class="flow vault" d="M580 80 H622" marker-end="url(#arrow)" data-flow="app-dynamic>vault" data-flow-label="database/creds" data-flow-delay="900" data-flow-only="ok"/>
+      <rect class="box data" x="630" y="40" width="110" height="80"/>
+      <text class="label" x="685" y="76" text-anchor="middle">creds</text>
+      <text class="sub" x="685" y="98" text-anchor="middle">30 s lease</text>
+      <text class="flow-label" x="505" y="148" text-anchor="middle">deny → 403, even though the ACL allowed it</text>
+    </svg>
+
+    <div class="scenario" data-scenario="sentinel-check" data-requires="enterprise" data-diagram="#d-sentinel">
+      <div class="scenario-head">
+        <h3>Apply, try, remove</h3>
+        <label class="field">window (UTC)
+          <select data-param="window">
+            <option value="office-hours">office hours 06–18</option>
+            <option value="night-batch">night batch 18–06</option>
+          </select>
+        </label>
+        <label class="field">enforcement
+          <select data-param="enforcement">
+            <option value="hard-mandatory">hard-mandatory</option>
+            <option value="soft-mandatory">soft-mandatory</option>
+          </select>
+        </label>
+        <label class="field">override
+          <select data-param="override">
+            <option value="false">no</option>
+            <option value="true">-policy-override</option>
+          </select>
+        </label>
+        <button class="btn" data-run>Run</button>
+      </div>
+      <div class="scenario-output" aria-live="polite"></div>
+    </div>
+    <p class="caption">One of the two windows contains the current UTC hour (step 3 shows Vault's clock), so one allows and the other denies.
+      The scenario removes the policy at the end so the other chapters keep working.</p>
+
+    <div class="grid-2">
+      <div class="callout risk"><strong>hard-mandatory</strong>: a denial is final. Asking for an override changes nothing.</div>
+      <div class="callout"><strong>soft-mandatory</strong>: a denial can be overridden with <code class="inline">-policy-override</code>,
+        a break-glass that shows up in the audit log as <em>override</em>.</div>
+    </div>
+
+    <p class="helper"><strong>Next.</strong> <a href="#run">Run it yourself</a></p>
+  </div>
+</section>
+
+<!-- ================================================================== -->
+<section id="run" class="chapter">
+  <div class="page">
+    <span class="chapter-num">Run it</span>
+    <h2>Run it yourself</h2>
+    <p class="lede">The whole stack is ephemeral: Vault in dev mode, Postgres with no data volume, wiped on shutdown.</p>
+<pre>docker compose up --build -d                     # then open http://localhost:8080
+export VAULT_ADDR=http://127.0.0.1:8200 VAULT_TOKEN=root
+vault read database/creds/app                    # same as stage 3
+vault kv get secret/app/db                       # same as stage 2
+docker compose --profile k8s up --build -d       # adds stages 4-5: k3s, Kubernetes auth, the operator (~35 s)
+docker compose down -v                           # removes everything</pre>
+  </div>
+</section>
+</main>
+
+<footer><div class="page">Demo-only shortcuts: Vault dev mode with root token <code class="inline">root</code>, fixed token ids, and
+  <code class="inline">/debug/creds</code> + <code class="inline">/probe</code> endpoints on the app. Everything binds to 127.0.0.1.
+  The Sentinel chapter needs Vault Enterprise.</div></footer>
+
+<svg width="0" height="0" style="position:absolute" aria-hidden="true">
+  <defs>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0 0 L10 5 L0 10 z" fill="#6f6f6f"/>
+    </marker>
+  </defs>
+</svg>
+
+<details class="audit-dock" data-audit-dock open>
+  <summary>Live activity <span class="count"></span></summary>
+  <div class="audit-empty">Connecting…</div>
+  <ul class="audit-list"></ul>
+</details>
+
+<aside class="drawer" data-drawer aria-label="Details">
+  <button class="drawer-close" aria-label="Close">×</button>
+  <span class="chip" data-drawer-kind></span>
+  <h3 data-drawer-name></h3>
+  <p data-drawer-body></p>
+  <dl></dl>
+</aside>
+
+<script>
+window.DEMO_NODES = {
+  kv: {
+    kind: 'secrets engine', name: 'KV v2',
+    body: 'Versioned key/value storage. Secrets are read by path, every version is kept with its creation time, and access is controlled by policy.',
+    meta: { 'Path': 'secret/app/db', 'CLI': 'vault kv get secret/app/db', 'API': 'GET /v1/secret/data/app/db' },
+  },
+  'database-engine': {
+    kind: 'secrets engine', name: 'Database secrets engine',
+    body: 'Creates database users on demand from a role template and drops them when their lease ends. Here: a Postgres user with SELECT on orders, valid for 30 seconds.',
+    meta: { 'Role': 'database/roles/app', 'TTL': '30s default · 60s max', 'CLI': 'vault read database/creds/app' },
+  },
+  lease: {
+    kind: 'concept', name: 'Lease',
+    body: 'Every dynamic secret comes with a lease: an id, a duration and whether it can be renewed. Vault revokes the secret when the lease expires or is revoked early.',
+    meta: { 'Look up': 'vault lease lookup <lease_id>', 'Revoke': 'vault lease revoke <lease_id>' },
+  },
+  policy: {
+    kind: 'concept', name: 'ACL policy',
+    body: 'Paths and capabilities a token may use. Anything not granted is denied. app-kv may read secret/data/app/db; app-dynamic may read database/creds/app.',
+    meta: { 'Policies': 'app-kv · app-dynamic', 'CLI': 'vault policy read app-kv' },
+  },
+  token: {
+    kind: 'concept', name: 'Vault token',
+    body: 'How a client proves who it is to Vault. Each app has its own token with its own policy. In this demo they have fixed ids; normally an auth method (Kubernetes, AppRole, JWT) issues them.',
+    meta: { 'Tokens': 'app-kv-token · app-dynamic-token' },
+  },
+  sentinel: {
+    kind: 'concept', name: 'Sentinel (Vault Enterprise)',
+    body: 'HashiCorp’s policy-as-code language. In Vault it adds conditions ACL policies cannot express: time, source address, MFA, identity metadata, request data.',
+    meta: { 'Policy types': 'EGP (per path) · RGP (per token or identity)', 'Levels': 'advisory · soft-mandatory · hard-mandatory' },
+  },
+  egp: {
+    kind: 'concept', name: 'Endpoint governing policy (EGP)',
+    body: 'A Sentinel policy attached to paths rather than to tokens, so it applies to every caller of those paths except the root token. Evaluated after the ACL check; both must pass.',
+    meta: { 'Here': 'db-issuance-window on database/creds/*', 'API': 'POST /v1/sys/policies/egp/:name' },
+  },
+  'sa-token': {
+    kind: 'concept', name: 'Service account token',
+    body: 'A JWT that Kubernetes signs and mounts into every pod. It names the namespace, service account and pod. Nobody configures it, so there is no secret to hand out or leak from config.',
+    meta: { 'Mounted at': '/var/run/secrets/kubernetes.io/serviceaccount/token', 'Subject': 'system:serviceaccount:orders:orders-api' },
+  },
+  tokenreview: {
+    kind: 'concept', name: 'TokenReview',
+    body: 'The Kubernetes API Vault calls to ask whether a service account token is valid and who it belongs to. Vault runs outside the cluster here, so it makes the call with the client’s own token, which needs the system:auth-delegator role.',
+    meta: { 'API': 'POST /apis/authentication.k8s.io/v1/tokenreviews', 'Vault config': 'auth/kubernetes/config' },
+  },
+  vso: {
+    kind: 'component', name: 'Vault Secrets Operator',
+    body: 'A Kubernetes operator that logs in to Vault and keeps Kubernetes Secrets in sync with Vault secrets: static (KV), dynamic (database, cloud) and PKI. It renews leases and can restart workloads when values change. Installed here from HashiCorp’s Helm chart by k3s at boot.',
+    meta: { 'Chart': 'hashicorp/vault-secrets-operator 1.6.0', 'Namespace': 'vault-secrets-operator-system', 'Logs in as': 'orders/orders-vso' },
+  },
+  vds: {
+    kind: 'resource', name: 'VaultDynamicSecret',
+    body: 'Tells the operator which dynamic secret to fetch, which Secret to write it to, and which workloads to restart when the credentials are replaced.',
+    meta: { 'Here': 'database/creds/app → Secret orders-db → restart Deployment orders-vso', 'API': 'secrets.hashicorp.com/v1beta1' },
+  },
+  audit: {
+    kind: 'concept', name: 'Audit device',
+    body: 'Vault writes every request and response to the audit log, with secret values HMAC-hashed. The dock in the corner streams it live.',
+    meta: { 'Device': 'file', 'Path': '/vault/logs/audit.log' },
+  },
+};
+</script>
+<script src="mocks.js"></script>
+<script src="shell.js"></script>
+<script src="demo.js"></script>
+</body>
+</html>

@@ -1,0 +1,181 @@
+# Ephemeral demo stack. Everything is in memory or in volumes removed by
+# `docker compose down -v`. Ports bind to 127.0.0.1 only: the Vault root token is "root".
+#
+#   docker compose up --build -d                  stages 1-3, Policy, Sentinel
+#   docker compose --profile k8s up --build -d    + stage 4: a k3s cluster using Kubernetes auth
+#   (or set COMPOSE_PROFILES=k8s in .env)
+name: vault-secrets-journey
+
+x-orders-api: &orders-api
+  build: ./app
+  image: vsj/orders-api:dev   # one tag, also imported into k3s for stage 4
+  depends_on:
+    seed: { condition: service_completed_successfully }
+
+services:
+  vault:
+    image: ${VAULT_IMAGE:-hashicorp/vault:latest}
+    command: server -dev -dev-root-token-id=root -dev-listen-address=0.0.0.0:8200
+    environment:
+      VAULT_LICENSE: ${VAULT_LICENSE:-}
+    cap_add: [IPC_LOCK]
+    ports: ["127.0.0.1:${VAULT_PORT:-8200}:8200"]
+    volumes: [vault-logs:/vault/logs]
+    networks:
+      default: { ipv4_address: 172.31.250.10 }   # fixed: pods in k3s reach Vault by IP (k8s/demo.yaml)
+    healthcheck:
+      test: ["CMD", "vault", "status", "-address=http://127.0.0.1:8200"]
+      interval: 2s
+      retries: 30
+
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: orders
+    # Logs connections, refused logins and role DDL to a file the runner tails for the live activity.
+    # The DDL lines contain generated passwords; the runner only forwards the verb and role name.
+    command:
+      - sh
+      - -c
+      - >-
+        mkdir -p /pglog && chown postgres:postgres /pglog &&
+        exec docker-entrypoint.sh postgres
+        -c log_connections=on -c log_statement=ddl
+        -c logging_collector=on -c log_directory=/pglog -c log_filename=postgresql.log
+        -c log_file_mode=0644 -c log_rotation_age=0
+        -c "log_line_prefix=%m [%p] %r %u@%d "
+    volumes:
+      - ./postgres/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+      - pg-logs:/pglog
+    networks:
+      default: { ipv4_address: 172.31.250.11 }
+    healthcheck:
+      # TCP check: the init-time server only listens on the socket, so this waits for init to finish.
+      test: ["CMD", "pg_isready", "-h", "127.0.0.1", "-U", "postgres", "-d", "orders"]
+      interval: 2s
+      retries: 30
+
+  # One-shot: configures Vault for this demo, then exits.
+  seed:
+    image: ${VAULT_IMAGE:-hashicorp/vault:latest}
+    entrypoint: ["/bin/sh", "/seed/seed.sh"]
+    environment:
+      VAULT_ADDR: http://vault:8200
+      VAULT_TOKEN: root
+    volumes: ["./seed:/seed:ro"]
+    depends_on:
+      vault: { condition: service_healthy }
+      postgres: { condition: service_healthy }
+
+  # The same app three times, one per stage.
+  app-static:
+    <<: *orders-api
+    environment:
+      SECRET_SOURCE: env
+      DB_USER: app
+      DB_PASSWORD: Sup3rS3cret!2019
+
+  app-kv:
+    <<: *orders-api
+    environment:
+      SECRET_SOURCE: kv
+      VAULT_ADDR: http://vault:8200
+      VAULT_TOKEN: app-kv-token
+
+  app-dynamic:
+    <<: *orders-api
+    environment:
+      SECRET_SOURCE: dynamic
+      VAULT_ADDR: http://vault:8200
+      VAULT_TOKEN: app-dynamic-token
+
+  runner:
+    build: ./runner
+    environment:
+      VAULT_ADDR: http://vault:8200
+      VAULT_TOKEN: root
+      RUNNER_PUBLIC_PORT: ${RUNNER_PORT:-8080}
+      K8S_API: https://k3s:6443
+      K8S_TLS_DIR: /k3s/server/tls   # admin client cert + CA, present only with the k8s profile
+    ports: ["127.0.0.1:${RUNNER_PORT:-8080}:8080"]
+    volumes:
+      - ./:/demo:ro
+      - vault-logs:/vault/logs:ro
+      - pg-logs:/pglog:ro
+      - k3s-data:/k3s:ro
+    depends_on:
+      seed: { condition: service_completed_successfully }
+
+  # ---- Stage 4, profile k8s -------------------------------------------------
+
+  # One-shot: puts the locally built app image where k3s imports images at boot.
+  # Demo shortcut: needs the Docker socket; there is no registry in this stack.
+  image-loader:
+    profiles: [k8s]
+    image: docker:cli
+    entrypoint: ["docker", "save", "-o", "/images/orders-api.tar", "vsj/orders-api:dev"]
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - k3s-images:/images
+
+  k3s:
+    profiles: [k8s]
+    image: ${K3S_IMAGE:-rancher/k3s:v1.34.1-k3s1}
+    command: server --tls-san k3s --node-name k3s --disable traefik --disable metrics-server
+    environment:
+      K3S_KUBECONFIG_OUTPUT: /var/lib/rancher/k3s/kubeconfig.yaml   # for vso-setup's kubectl
+    privileged: true
+    tmpfs: [/run, /var/run]
+    ulimits:
+      nproc: 65535
+      nofile: { soft: 65535, hard: 65535 }
+    volumes:
+      - k3s-data:/var/lib/rancher/k3s
+      - k3s-images:/var/lib/rancher/k3s/agent/images
+      - ./k8s/demo.yaml:/var/lib/rancher/k3s/server/manifests/demo.yaml:ro
+    healthcheck:
+      test: ["CMD", "kubectl", "get", "--raw", "/readyz"]
+      interval: 3s
+      start_period: 20s
+      retries: 60
+    depends_on:
+      image-loader: { condition: service_completed_successfully }
+
+  # One-shot: Vault's Kubernetes auth method, pointed at k3s.
+  seed-k8s:
+    profiles: [k8s]
+    image: ${VAULT_IMAGE:-hashicorp/vault:latest}
+    entrypoint: ["/bin/sh", "/seed/seed-k8s.sh"]
+    user: "0"   # reads the cluster CA from k3s's root-only tls directory
+    environment:
+      VAULT_ADDR: http://vault:8200
+      VAULT_TOKEN: root
+    volumes:
+      - ./seed:/seed:ro
+      - k3s-data:/k3s:ro
+    depends_on:
+      seed: { condition: service_completed_successfully }
+      k3s: { condition: service_healthy }
+
+  # One-shot: stage 5, the Vault Secrets Operator's resources once Helm has installed it.
+  vso-setup:
+    profiles: [k8s]
+    image: ${K3S_IMAGE:-rancher/k3s:v1.34.1-k3s1}
+    entrypoint: ["/bin/sh", "/k8s/vso-setup.sh"]
+    volumes:
+      - ./k8s:/k8s:ro
+      - k3s-data:/k3s:ro
+    depends_on:
+      seed-k8s: { condition: service_completed_successfully }
+
+networks:
+  default:
+    ipam:
+      config: [{ subnet: 172.31.250.0/24 }]
+
+volumes:
+  vault-logs:
+  pg-logs:
+  k3s-data:
+  k3s-images:

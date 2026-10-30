@@ -1,0 +1,83 @@
+# Stage 5: Vault Secrets Operator. Applied by the vso-setup container once the operator's CRDs exist.
+# The app below is the stage 1 app (it reads DB_USER / DB_PASSWORD from its environment) with no
+# Vault code and no Kubernetes identity. The operator does the Vault work for it.
+apiVersion: secrets.hashicorp.com/v1beta1
+kind: VaultConnection
+metadata:
+  name: vault
+  namespace: orders
+spec:
+  address: http://vault.orders.svc:8200
+---
+# How the operator logs in for this namespace: Kubernetes auth as orders/orders-vso,
+# with a fresh 10-minute service account token for every login.
+apiVersion: secrets.hashicorp.com/v1beta1
+kind: VaultAuth
+metadata:
+  name: orders-vso
+  namespace: orders
+spec:
+  vaultConnectionRef: vault
+  method: kubernetes
+  mount: kubernetes
+  kubernetes:
+    role: orders-vso
+    serviceAccount: orders-vso
+    tokenExpirationSeconds: 600
+---
+# Dynamic database credentials, kept in the Secret orders-db. The operator renews the lease and,
+# when it has to fetch new credentials, rewrites the Secret and restarts the deployment.
+apiVersion: secrets.hashicorp.com/v1beta1
+kind: VaultDynamicSecret
+metadata:
+  name: orders-db
+  namespace: orders
+spec:
+  vaultAuthRef: orders-vso
+  mount: database
+  path: creds/app
+  renewalPercent: 67
+  destination:
+    name: orders-db
+    create: true
+  rolloutRestartTargets:
+    - kind: Deployment
+      name: orders-vso
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: orders-vso
+  namespace: orders
+spec:
+  replicas: 1
+  selector: { matchLabels: { app: orders-vso } }
+  template:
+    metadata: { labels: { app: orders-vso } }
+    spec:
+      automountServiceAccountToken: false   # no Kubernetes identity: this pod never talks to Vault
+      containers:
+        - name: orders-api
+          image: vsj/orders-api:dev
+          imagePullPolicy: Never
+          ports: [{ containerPort: 8000 }]
+          env:   # the stage 1 configuration, except that the values come from the operator's Secret
+            - { name: SECRET_SOURCE, value: env }
+            - { name: DB_HOST, value: postgres.orders.svc }
+            - name: DB_USER
+              valueFrom: { secretKeyRef: { name: orders-db, key: username } }
+            - name: DB_PASSWORD
+              valueFrom: { secretKeyRef: { name: orders-db, key: password } }
+          readinessProbe:
+            httpGet: { path: /healthz, port: 8000 }
+            periodSeconds: 2
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: orders-vso
+  namespace: orders
+spec:
+  type: NodePort
+  selector: { app: orders-vso }
+  ports: [{ port: 8000, targetPort: 8000, nodePort: 30083 }]

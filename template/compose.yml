@@ -1,0 +1,44 @@
+# Ephemeral demo stack. Everything is in memory or in volumes removed by
+# `docker compose down -v`. Ports bind to 127.0.0.1 only: the Vault root token is "root".
+name: demo-template
+
+services:
+  vault:
+    image: ${VAULT_IMAGE:-hashicorp/vault:latest}
+    command: server -dev -dev-root-token-id=root -dev-listen-address=0.0.0.0:8200
+    environment:
+      VAULT_LICENSE: ${VAULT_LICENSE:-}
+    cap_add: [IPC_LOCK]
+    ports: ["127.0.0.1:${VAULT_PORT:-8200}:8200"]
+    volumes: [vault-logs:/vault/logs]
+    healthcheck:
+      test: ["CMD", "vault", "status", "-address=http://127.0.0.1:8200"]
+      interval: 2s
+      retries: 30
+
+  # One-shot: configures Vault for this demo, then exits.
+  seed:
+    image: ${VAULT_IMAGE:-hashicorp/vault:latest}
+    entrypoint: ["/bin/sh", "/seed/seed.sh"]
+    environment:
+      VAULT_ADDR: http://vault:8200
+      VAULT_TOKEN: root
+    volumes: ["./seed:/seed:ro"]
+    depends_on:
+      vault: { condition: service_healthy }
+
+  runner:
+    build: ./runner
+    environment:
+      VAULT_ADDR: http://vault:8200
+      VAULT_TOKEN: root
+      RUNNER_PUBLIC_PORT: ${RUNNER_PORT:-8080}
+    ports: ["127.0.0.1:${RUNNER_PORT:-8080}:8080"]
+    volumes:
+      - ./:/demo:ro
+      - vault-logs:/vault/logs:ro
+    depends_on:
+      seed: { condition: service_completed_successfully }
+
+volumes:
+  vault-logs:

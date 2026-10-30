@@ -1,0 +1,2 @@
+# Everything runs in Linux containers: keep LF everywhere, regardless of core.autocrlf.
+* text=auto eol=lf

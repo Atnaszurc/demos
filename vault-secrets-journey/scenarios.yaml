@@ -1,0 +1,318 @@
+# Everything the page can ask the runner to do. The page sends only a scenario
+# id plus params; each param value must be in the scenario's allowlist.
+#
+# Step kinds:
+#   vault  - call the Vault HTTP API (token defaults to root; set `token:` to act as someone else)
+#   http   - call a service listed under `services:`
+#   wait   - sleep `seconds` (the page shows a countdown)
+#   k8s    - read-only GET to the Kubernetes API (needs a cluster, e.g. a k3s compose profile)
+#
+# Step fields: title, method (GET), path, body, command (shown on the page),
+# save {name: dotted.path.in.response}, show {label: dotted.path} (trim what the page displays),
+# expect (ok | fail | any; default ok).
+# A scenario's `cleanup:` steps always run: after the steps, after an error, or when the page goes away mid-run.
+# Placeholders: {{param}} or {{saved.field}}.
+
+services:
+  app-static: http://app-static:8000
+  app-kv: http://app-kv:8000
+  app-dynamic: http://app-dynamic:8000
+  # stage 4, profile k8s: NodePorts on the k3s container
+  app-k8s: http://k3s:30081
+  app-reporting: http://k3s:30082
+  app-vso: http://k3s:30083
+
+# Live activity (runner/events.py): who is who in the event stream and the diagram animations.
+#   actors:      Compose services whose IPs identify a caller (pods in k3s all appear as k3s)
+#   identities:  Vault display name -> actor
+#   watches:     Kubernetes fields to poll; a change publishes `event`
+actors: [vault, postgres, app-static, app-kv, app-dynamic, k3s, runner]
+identities:
+  root: you
+  app-kv: app-kv
+  app-dynamic: app-dynamic
+  kubernetes-orders-orders-api: orders-api
+  kubernetes-orders-orders-vso: operator
+watches:
+  - path: /api/v1/namespaces/orders/secrets/orders-db
+    field: metadata.resourceVersion
+    event: { from: operator, to: secret, label: write Secret orders-db }
+  - path: /apis/apps/v1/namespaces/orders/deployments/orders-vso
+    field: spec.template.metadata.annotations
+    event: { from: operator, to: app-vso, label: rollout restart orders-vso }
+
+scenarios:
+  # Chapters 1-3 and the comparison table
+  - id: request
+    title: Send a request to the orders API
+    params:
+      stage: [static, kv, dynamic]
+    steps:
+      - title: GET /orders
+        service: app-{{stage}}
+        path: /orders
+        command: curl http://app-{{stage}}:8000/orders
+
+  - id: what-leaks
+    title: What the app is holding
+    params:
+      stage: [static, kv, dynamic]
+    steps:
+      - title: Credentials inside the app (demo-only endpoint)
+        service: app-{{stage}}
+        path: /debug/creds
+        command: curl http://app-{{stage}}:8000/debug/creds
+
+  # Chapter 2: how old is the KV password?
+  - id: kv-metadata
+    title: KV v2 metadata for the database password
+    steps:
+      - title: Secret metadata
+        kind: vault
+        path: /v1/secret/metadata/app/db
+        command: vault kv metadata get secret/app/db
+
+  # Chapter 3: the lease behind a dynamic credential
+  - id: dynamic-lease
+    title: A dynamic credential and its lease
+    steps:
+      - title: Ask Vault for a database user
+        kind: vault
+        path: /v1/database/creds/app
+        command: vault read database/creds/app
+        save: { cred: . }
+      - title: Look up the lease
+        kind: vault
+        method: PUT
+        path: /v1/sys/leases/lookup
+        body: { lease_id: "{{cred.lease_id}}" }
+        command: vault lease lookup {{cred.lease_id}}
+
+  # Leak test
+  - id: leak-test
+    title: Steal the credentials, try them 35 seconds later
+    params:
+      stage: [static, kv, dynamic]
+    steps:
+      - title: Copy the credentials out of the app
+        service: app-{{stage}}
+        path: /debug/creds
+        command: curl http://app-{{stage}}:8000/debug/creds
+        save: { leaked: . }
+      - title: Log in to the database with them now
+        service: app-{{stage}}
+        method: POST
+        path: /probe
+        body: { username: "{{leaked.username}}", password: "{{leaked.password}}" }
+        command: psql "postgresql://{{leaked.username}}:****@postgres/orders" -c 'select 1'
+      - title: Wait longer than the 30 s lease
+        kind: wait
+        seconds: 35
+      - title: Log in again with the same credentials
+        service: app-{{stage}}
+        method: POST
+        path: /probe
+        body: { username: "{{leaked.username}}", password: "{{leaked.password}}" }
+        command: psql "postgresql://{{leaked.username}}:****@postgres/orders" -c 'select 1'
+        expect: any
+
+  # Policies
+  - id: policy-read
+    title: Read a policy
+    params:
+      policy: [app-kv, app-dynamic]
+    steps:
+      - title: Policy {{policy}}
+        kind: vault
+        path: /v1/sys/policies/acl/{{policy}}
+        command: vault policy read {{policy}}
+
+  - id: policy-check
+    title: Who can read what
+    params:
+      token: [app-kv-token, app-dynamic-token]
+      path: [secret/data/app/db, database/creds/app]
+    steps:
+      - title: Read {{path}} as {{token}}
+        kind: vault
+        token: "{{token}}"
+        path: /v1/{{path}}
+        command: VAULT_TOKEN={{token}} vault read {{path}}
+        expect: any
+
+  # Sentinel (Vault Enterprise): an endpoint governing policy on top of the ACL policies.
+  # Self-contained: applies the EGP, tries it, removes it, so other chapters keep working.
+  - id: sentinel-check
+    title: Credentials only inside an issuance window
+    params:
+      window: [office-hours, night-batch]
+      enforcement: [hard-mandatory, soft-mandatory]
+      override: ["false", "true"]
+    steps:
+      - title: Apply the Sentinel policy (window {{window}}, {{enforcement}})
+        kind: vault
+        method: POST
+        path: /v1/sys/policies/egp/db-issuance-window
+        command: vault write sys/policies/egp/db-issuance-window paths="database/creds/*" enforcement_level={{enforcement}} policy=@db-issuance-window.sentinel
+        body:
+          paths: ["database/creds/*"]
+          enforcement_level: "{{enforcement}}"
+          policy: |
+            import "time"
+
+            # Hours are UTC: Sentinel's time import has no time zones.
+            windows = {
+              "office-hours": {"start": 6, "end": 18},
+              "night-batch":  {"start": 18, "end": 6},
+            }
+            window = windows["{{window}}"]
+
+            in_window = func(w) {
+              if w.start < w.end {
+                return time.now.hour >= w.start and time.now.hour < w.end
+              }
+              return time.now.hour >= w.start or time.now.hour < w.end
+            }
+
+            main = rule { in_window(window) }
+      - title: Read the policy back
+        kind: vault
+        path: /v1/sys/policies/egp/db-issuance-window
+        command: vault read sys/policies/egp/db-issuance-window
+      - title: Vault's clock (UTC)
+        kind: vault
+        path: /v1/sys/health
+        command: curl $VAULT_ADDR/v1/sys/health   # server_time_utc
+      - title: Ask for database credentials as app-dynamic (override={{override}})
+        kind: vault
+        token: app-dynamic-token
+        path: /v1/database/creds/app
+        headers: { X-Vault-Policy-Override: "{{override}}" }
+        command: VAULT_TOKEN=app-dynamic-token vault read -policy-override={{override}} database/creds/app
+        expect: any
+    cleanup:
+      - title: Remove the Sentinel policy again
+        kind: vault
+        method: DELETE
+        path: /v1/sys/policies/egp/db-issuance-window
+        command: vault delete sys/policies/egp/db-issuance-window
+
+  # Stage 4 (profile k8s): the orders API as a pod, logging in with its service account.
+  - id: k8s-request
+    title: Send a request to the orders API pod
+    steps:
+      - title: GET /orders (pod orders-api, service account orders/orders-api)
+        service: app-k8s
+        path: /orders
+        command: curl http://orders-api.orders.svc:8000/orders
+
+  - id: k8s-pod-spec
+    title: What the pod is configured with
+    params:
+      app: [orders-api, reporting]
+    steps:
+      - title: The {{app}} pod's spec
+        kind: k8s
+        path: /api/v1/namespaces/orders/pods?labelSelector=app%3D{{app}}
+        command: kubectl -n orders get pod -l app={{app}} -o yaml
+        show:
+          pod: items.0.metadata.name
+          serviceAccountName: items.0.spec.serviceAccountName
+          image: items.0.spec.containers.0.image
+          env: items.0.spec.containers.0.env
+          volumeMounts: items.0.spec.containers.0.volumeMounts
+
+  - id: k8s-identity
+    title: The identity the pod presents to Vault
+    steps:
+      - title: Service account token claims (demo-only endpoint, signature not shown)
+        service: app-k8s
+        path: /debug/identity
+        command: kubectl -n orders exec deploy/orders-api -- cat /var/run/secrets/kubernetes.io/serviceaccount/token
+      - title: The Vault role it maps to
+        kind: vault
+        path: /v1/auth/kubernetes/role/orders-api
+        command: vault read auth/kubernetes/role/orders-api
+        show:
+          bound_service_account_names: data.bound_service_account_names
+          bound_service_account_namespaces: data.bound_service_account_namespaces
+          audience: data.audience
+          token_policies: data.token_policies
+          token_ttl: data.token_ttl
+
+  - id: k8s-wrong-sa
+    title: Same image, different service account
+    steps:
+      - title: GET /orders on the reporting pod (service account orders/reporting)
+        service: app-reporting
+        path: /orders
+        command: curl http://reporting.orders.svc:8000/orders
+        expect: fail
+
+  # Stage 5 (profile k8s): Vault Secrets Operator. The app is the stage 1 app; the operator does the Vault work.
+  - id: vso-request
+    title: Send a request to the operator-managed app
+    steps:
+      - title: GET /orders (pod orders-vso, credentials from the Secret orders-db)
+        service: app-vso
+        path: /orders
+        command: curl http://orders-vso.orders.svc:8000/orders
+
+  - id: vso-objects
+    title: What the operator manages
+    steps:
+      - title: The VaultDynamicSecret (what to fetch, and what to restart)
+        kind: k8s
+        path: /apis/secrets.hashicorp.com/v1beta1/namespaces/orders/vaultdynamicsecrets/orders-db
+        command: kubectl -n orders get vaultdynamicsecret orders-db -o yaml
+        show:
+          vaultAuthRef: spec.vaultAuthRef
+          vault_path: spec.path
+          mount: spec.mount
+          destination: spec.destination.name
+          rolloutRestartTargets: spec.rolloutRestartTargets
+          renewalPercent: spec.renewalPercent
+          lease: status.secretLease
+          lastRenewalTime: status.lastRenewalTime
+      - title: The Secret it writes (username decoded)
+        kind: k8s
+        path: /api/v1/namespaces/orders/secrets/orders-db
+        command: kubectl -n orders get secret orders-db -o jsonpath='{.data.username}' | base64 -d
+        show:
+          username: data.username|base64
+          labels: metadata.labels
+          ownerReferences: metadata.ownerReferences
+      - title: The app pod (env from the Secret, no service account token)
+        kind: k8s
+        path: /api/v1/namespaces/orders/pods?labelSelector=app%3Dorders-vso
+        command: kubectl -n orders get pod -l app=orders-vso -o yaml
+        show:
+          pod: items.0.metadata.name
+          automountServiceAccountToken: items.0.spec.automountServiceAccountToken
+          env: items.0.spec.containers.0.env
+      - title: Does the app pod have a Kubernetes identity?
+        service: app-vso
+        path: /debug/identity
+        command: kubectl -n orders exec deploy/orders-vso -- ls /var/run/secrets/kubernetes.io/serviceaccount
+        expect: fail
+
+  - id: vso-rotation
+    title: Watch the operator rotate the credentials
+    steps:
+      - title: GET /orders now
+        service: app-vso
+        path: /orders
+        command: curl http://orders-vso.orders.svc:8000/orders
+        show:
+          db_user: meta.db_user
+          pod: meta.instance
+      - title: Wait for the operator (renews at 20 s, rotates when the 60 s maximum is near)
+        kind: wait
+        seconds: 45
+      - title: GET /orders again
+        service: app-vso
+        path: /orders
+        command: curl http://orders-vso.orders.svc:8000/orders
+        show:
+          db_user: meta.db_user
+          pod: meta.instance

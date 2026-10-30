@@ -1,0 +1,125 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Demo Template</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@300;400;500;600&display=swap" rel="stylesheet">
+<link rel="icon" href="data:,">
+<script>
+  // Apply a saved theme before first paint; no saved choice means follow the browser.
+  try { const t = localStorage.getItem('demo-theme'); if (t === 'light' || t === 'dark') document.documentElement.dataset.theme = t; } catch { /* storage blocked */ }
+</script>
+<link rel="stylesheet" href="shell.css">
+</head>
+<body>
+<div class="progress"></div>
+
+<header class="header">
+  <div class="header-inner">
+    <div class="brand">Demo template</div>
+    <nav class="chapters-nav" aria-label="Chapters">
+      <a href="#intro">Intro</a>
+      <a href="#example">Example</a>
+      <a href="#run">Run it</a>
+    </nav>
+    <button class="theme-toggle" data-theme-toggle type="button">◐ System</button>
+    <span class="live-badge" data-live-badge>Checking…</span>
+  </div>
+</header>
+
+<main>
+<section id="intro" class="chapter">
+  <div class="page">
+    <span class="chapter-num">Demo template</span>
+    <h1>Replace this with the demo's one-line promise</h1>
+    <p class="lede">Each chapter is one step of the story. Scenario blocks run real requests against the local stack,
+      and every Vault call shows up in the audit log in the corner.</p>
+  </div>
+</section>
+
+<section id="example" class="chapter">
+  <div class="page">
+    <span class="chapter-num">Chapter 01 · <span class="chip chip-vault">vault</span></span>
+    <h2>A scenario block</h2>
+    <p class="lede">Clicking the button runs the <code class="inline">kv-roundtrip</code> scenario from
+      <code class="inline">scenarios.yaml</code> against <span class="node" data-node="vault">Vault</span>.</p>
+
+    <svg id="example-diagram" class="diagram" viewBox="0 0 760 140" role="img" aria-label="Runner writes to and reads from Vault">
+      <rect class="box" x="30" y="30" width="200" height="80" data-actor="you"/>
+      <text class="label" x="130" y="66" text-anchor="middle">Runner</text>
+      <text class="sub" x="130" y="88" text-anchor="middle">scenarios.yaml</text>
+      <path class="flow vault" d="M230 70 H530" marker-end="url(#arrow)" data-flow="you>vault"/>
+      <text class="flow-label" x="380" y="60" text-anchor="middle">kv put / kv get</text>
+      <rect class="box vault" x="530" y="30" width="200" height="80" data-actor="vault"/>
+      <text class="label" x="630" y="66" text-anchor="middle">Vault</text>
+      <text class="sub" x="630" y="88" text-anchor="middle">secret/ (KV v2)</text>
+    </svg>
+
+    <div class="scenario" data-scenario="kv-roundtrip" data-diagram="#example-diagram">
+      <div class="scenario-head">
+        <h3>Write and read a secret</h3>
+        <label class="field">greeting
+          <select data-param="greeting"><option>hello</option><option>hej</option></select>
+        </label>
+        <button class="btn" data-run>Run</button>
+      </div>
+      <div class="scenario-output" aria-live="polite"></div>
+    </div>
+
+    <p class="helper"><strong>Next.</strong> <a href="#run">Run it yourself</a></p>
+  </div>
+</section>
+
+<section id="run" class="chapter">
+  <div class="page">
+    <span class="chapter-num">Run it</span>
+    <h2>Run it yourself</h2>
+<pre>docker compose up --build -d     # then open http://localhost:8080
+export VAULT_ADDR=http://127.0.0.1:8200 VAULT_TOKEN=root
+vault kv get secret/demo/hello
+docker compose down -v           # removes everything</pre>
+  </div>
+</section>
+</main>
+
+<footer><div class="page">Ephemeral demo stack: Vault runs in dev mode and is wiped on <code class="inline">docker compose down -v</code>.</div></footer>
+
+<!-- Shared SVG defs -->
+<svg width="0" height="0" style="position:absolute" aria-hidden="true">
+  <defs>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0 0 L10 5 L0 10 z" fill="#6f6f6f"/>
+    </marker>
+  </defs>
+</svg>
+
+<details class="audit-dock" data-audit-dock open>
+  <summary>Live activity <span class="count"></span></summary>
+  <div class="audit-empty">Connecting…</div>
+  <ul class="audit-list"></ul>
+</details>
+
+<aside class="drawer" data-drawer aria-label="Details">
+  <button class="drawer-close" aria-label="Close">×</button>
+  <span class="chip" data-drawer-kind></span>
+  <h3 data-drawer-name></h3>
+  <p data-drawer-body></p>
+  <dl></dl>
+</aside>
+
+<script>
+window.DEMO_NODES = {
+  vault: {
+    kind: 'component', name: 'HashiCorp Vault',
+    body: 'Running in dev mode: in memory, unsealed, root token "root". Wiped when the stack goes down.',
+    meta: { 'Address': 'http://127.0.0.1:8200', 'Audit log': '/vault/logs/audit.log' },
+  },
+};
+</script>
+<script src="mocks.js"></script>
+<script src="shell.js"></script>
+</body>
+</html>

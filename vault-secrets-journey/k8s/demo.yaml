@@ -1,0 +1,167 @@
+# Applied automatically by k3s at boot (mounted into /var/lib/rancher/k3s/server/manifests).
+# Stage 4: the orders API runs as a pod and logs in to Vault with its service account.
+# Vault and Postgres stay outside the cluster (in Compose), as in many real setups.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: orders
+---
+# The identity Vault's Kubernetes auth role is bound to.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: orders-api
+  namespace: orders
+---
+# A different workload in the same namespace. Its pod is identical except for the service account.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: reporting
+  namespace: orders
+---
+# Vault runs outside the cluster, so it checks each login JWT by calling the TokenReview API
+# with the client's own JWT. That needs system:auth-delegator for every client service account.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: vault-tokenreview-orders
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: system:auth-delegator
+subjects:
+  - { kind: ServiceAccount, name: orders-api, namespace: orders }
+  - { kind: ServiceAccount, name: reporting, namespace: orders }
+  - { kind: ServiceAccount, name: orders-vso, namespace: orders }
+---
+# Stage 5: the identity the Vault Secrets Operator uses for the orders namespace.
+# Only the operator presents it; the app pod in k8s/vso.yaml has no token at all.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: orders-vso
+  namespace: orders
+---
+# Stage 5: k3s's Helm controller installs the Vault Secrets Operator at boot.
+# Its own resources (k8s/vso.yaml) are applied by the vso-setup container once the CRDs exist.
+apiVersion: helm.cattle.io/v1
+kind: HelmChart
+metadata:
+  name: vault-secrets-operator
+  namespace: kube-system
+spec:
+  repo: https://helm.releases.hashicorp.com
+  chart: vault-secrets-operator
+  version: 1.6.0
+  targetNamespace: vault-secrets-operator-system
+  createNamespace: true
+---
+# Vault and Postgres live in Compose with fixed IPs (pods can't resolve Docker's internal DNS).
+apiVersion: v1
+kind: Service
+metadata:
+  name: vault
+  namespace: orders
+spec:
+  ports: [{ name: http, port: 8200, targetPort: 8200 }]
+---
+apiVersion: discovery.k8s.io/v1
+kind: EndpointSlice
+metadata:
+  name: vault-external
+  namespace: orders
+  labels: { kubernetes.io/service-name: vault }
+addressType: IPv4
+ports: [{ name: http, port: 8200 }]
+endpoints: [{ addresses: ["172.31.250.10"] }]
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: postgres
+  namespace: orders
+spec:
+  ports: [{ name: pg, port: 5432, targetPort: 5432 }]
+---
+apiVersion: discovery.k8s.io/v1
+kind: EndpointSlice
+metadata:
+  name: postgres-external
+  namespace: orders
+  labels: { kubernetes.io/service-name: postgres }
+addressType: IPv4
+ports: [{ name: pg, port: 5432 }]
+endpoints: [{ addresses: ["172.31.250.11"] }]
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: orders-api
+  namespace: orders
+spec:
+  replicas: 1
+  selector: { matchLabels: { app: orders-api } }
+  template:
+    metadata: { labels: { app: orders-api } }
+    spec:
+      serviceAccountName: orders-api
+      containers:
+        - name: orders-api
+          image: vsj/orders-api:dev
+          imagePullPolicy: Never   # imported into k3s from the local Docker build
+          ports: [{ containerPort: 8000 }]
+          env:   # note what is missing: no password, no Vault token
+            - { name: SECRET_SOURCE, value: dynamic }
+            - { name: VAULT_ADDR, value: "http://vault.orders.svc:8200" }
+            - { name: VAULT_K8S_ROLE, value: orders-api }
+            - { name: DB_HOST, value: postgres.orders.svc }
+          readinessProbe:
+            httpGet: { path: /healthz, port: 8000 }
+            periodSeconds: 2
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: orders-api
+  namespace: orders
+spec:
+  type: NodePort
+  selector: { app: orders-api }
+  ports: [{ port: 8000, targetPort: 8000, nodePort: 30081 }]
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: reporting
+  namespace: orders
+spec:
+  replicas: 1
+  selector: { matchLabels: { app: reporting } }
+  template:
+    metadata: { labels: { app: reporting } }
+    spec:
+      serviceAccountName: reporting
+      containers:
+        - name: reporting
+          image: vsj/orders-api:dev
+          imagePullPolicy: Never
+          ports: [{ containerPort: 8000 }]
+          env:   # same image and settings, including the orders-api Vault role it is not entitled to
+            - { name: SECRET_SOURCE, value: dynamic }
+            - { name: VAULT_ADDR, value: "http://vault.orders.svc:8200" }
+            - { name: VAULT_K8S_ROLE, value: orders-api }
+            - { name: DB_HOST, value: postgres.orders.svc }
+          readinessProbe:
+            httpGet: { path: /healthz, port: 8000 }
+            periodSeconds: 2
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: reporting
+  namespace: orders
+spec:
+  type: NodePort
+  selector: { app: reporting }
+  ports: [{ port: 8000, targetPort: 8000, nodePort: 30082 }]
